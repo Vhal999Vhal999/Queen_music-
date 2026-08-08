@@ -35,7 +35,7 @@ Stream high-quality audio and video with ease.
 
 Deploying on Heroku is easy! Just click the button below:
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://dashboard.heroku.com/new?template=https://github.com/TheAloneTeam/KartikMusic)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://dashboard.heroku.com/new?template=https://github.com/Vhal999Vhal999/Queen_music-)
 
 ### 💻 VPS / Local Deployment
 
