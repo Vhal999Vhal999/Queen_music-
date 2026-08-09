@@ -15,7 +15,7 @@
 from random import randint
 from time import time
 
-from pymongo import AsyncMongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from KartikMusic import config, logger, userbot
 
