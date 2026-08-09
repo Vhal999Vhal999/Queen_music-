@@ -12,9 +12,13 @@
 # ❤️ Made with dedication and love by ItzShukla
 # -----------------------------------------------
 
-from motor.motor_asyncio import AsyncIOMotorClient
-from config import MONGO_DB_URI
-from ..logging import LOGGER
+from random import randint
+from time import time
+
+from pymongo import AsyncMongoClient
+
+from KartikMusic import config, logger, userbot
+
 
 
 LOGGER(__name__).info("Connecting to your Mongo Database...")
