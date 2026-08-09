@@ -21,7 +21,7 @@ from KartikMusic import config, logger, userbot
 
 
 
-LOGGER(__name__).info("Connecting to your Mongo Database...")
+LOGGER.info("Connecting to your Mongo Database...")
 
 try:
     # Old Motor-compatible async MongoDB client.
