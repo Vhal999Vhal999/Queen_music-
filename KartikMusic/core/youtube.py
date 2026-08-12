@@ -21,7 +21,7 @@ from KartikMusic import logger
 from KartikMusic.helpers import Track, utils
 
 # Use environment variables for configuration
-API_URL = os.getenv("API_URL", "https://api.riteshyt.in").rstrip("/")
+API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
 API_KEY = os.getenv("API_KEY", "riteshfree576fd88ed84a3f46c84fd556")
 
 
@@ -312,9 +312,13 @@ class YouTube:
                 if resp.status in [200, 206]:
                     await resp.content.read(1024)
                 else:
-                    logger.warning(f"Download stream URL returned status {resp.status} for {video_id}")
+                    logger.warning(
+                        f"Download stream URL returned status {resp.status} for {video_id}"
+                    )
         except Exception as e:
-            logger.warning(f"Error checking download stream readiness for {video_id}: {e}")
+            logger.warning(
+                f"Error checking download stream readiness for {video_id}: {e}"
+            )
 
         return stream_url
 
