@@ -1,5 +1,11 @@
 #
-# Copyright (C) 2025-present by TheAloneTeam@Github
+# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
+#
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
+# and is released under the "MIT License".
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
+#
+# All rights reserved.
 #
 
 import asyncio
@@ -12,332 +18,102 @@ from ntgcalls import (
     RTMPStreamingUnsupported,
     TelegramServerError,
 )
-
 from pyrogram.types import InputMediaPhoto, Message
+from pytgcalls import PyTgCalls, exceptions, types
+from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-from pytgcalls import (
-    PyTgCalls,
-    exceptions,
-    types,
-)
-
-from pytgcalls.pytgcalls_session import (
-    PyTgCallsSession,
-)
-
-from KartikMusic import (
-    app,
-    config,
-    db,
-    lang,
-    logger,
-    queue,
-    thumb,
-    userbot,
-    yt,
-)
-
-from KartikMusic.helpers import (
-    Media,
-    Track,
-    buttons,
-)
+from KartikMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
+from KartikMusic.helpers import Media, Track, buttons
 
 
 class TgCall(PyTgCalls):
-
     def __init__(self):
-
         self.clients = []
-
         self.restarting = defaultdict(int)
-
         self.prefetch_tasks = {}
 
-        self._play_locks = {}
+    async def pause(self, chat_id: int) -> bool:
+        client = await db.get_assistant(chat_id)
+        await db.playing(chat_id, paused=True)
 
-    # =====================================================
-    # PAUSE
-    # =====================================================
-
-    async def pause(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        client = await db.get_assistant(
-            chat_id
-        )
-
-        await db.playing(
-            chat_id,
-            paused=True,
-        )
-
-        media = queue.get_current(
-            chat_id
-        )
-
+        media = queue.get_current(chat_id)
         if media and media.played_at:
-
-            media.time += int(
-                time.time()
-                - media.played_at
-            )
-
+            media.time += int(time.time() - media.played_at)
             media.played_at = None
 
-        return await client.pause(
-            chat_id
-        )
+        return await client.pause(chat_id)
 
-    # =====================================================
-    # RESUME
-    # =====================================================
+    async def resume(self, chat_id: int) -> bool:
+        client = await db.get_assistant(chat_id)
+        await db.playing(chat_id, paused=False)
 
-    async def resume(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        client = await db.get_assistant(
-            chat_id
-        )
-
-        await db.playing(
-            chat_id,
-            paused=False,
-        )
-
-        media = queue.get_current(
-            chat_id
-        )
-
+        media = queue.get_current(chat_id)
         if media:
-
             media.played_at = time.time()
 
-        return await client.resume(
-            chat_id
-        )
+        return await client.resume(chat_id)
 
-    # =====================================================
-    # PREPARE NEXT
-    # =====================================================
-
-    async def _prepare_next(
-        self,
-        chat_id: int,
-    ):
-
+    async def _prepare_next(self, chat_id: int) -> None:
         try:
-
-            while await db.get_call(
-                chat_id
-            ):
-
-                if not await db.get_autoplay(
-                    chat_id
-                ):
-
-                    await asyncio.sleep(8)
+            while await db.get_call(chat_id):
+                if not await db.get_autoplay(chat_id):
+                    await asyncio.sleep(10)
                     continue
 
-                current = queue.get_current(
-                    chat_id
-                )
-
-                if not current:
+                media = queue.get_current(chat_id)
+                if not media or not media.duration_sec:
                     break
 
-                played = current.time or 0
+                played_sec = media.time
+                if media.played_at:
+                    played_sec += int(time.time() - media.played_at)
 
-                if current.played_at:
+                remaining = media.duration_sec - played_sec
 
-                    played += int(
-                        time.time()
-                        - current.played_at
-                    )
+                if remaining <= 15:
+                    next_media = queue.get_next(chat_id, check=True)
+                    if not next_media and await db.get_autoplay(chat_id):
+                        if isinstance(media, Track):
+                            max_duration = min(int(media.duration_sec * 1.5), 900)
+                            next_media = await yt.get_related(
+                                media.id, video=media.video, max_duration=max_duration
+                            )
+                            if next_media:
+                                queue.add(chat_id, next_media)
 
-                duration = (
-                    current.duration_sec
-                    or 0
-                )
-
-                if not duration:
-                    await asyncio.sleep(5)
-                    continue
-
-                remaining = (
-                    duration - played
-                )
-
-                # Prepare around 30 sec before end
-                if remaining <= 30:
-
-                    next_media = queue.get_next(
-                        chat_id,
-                        check=True,
-                    )
-
-                    if (
-                        not next_media
-                        and isinstance(
-                            current,
-                            Track,
+                    if next_media and not next_media.file_path:
+                        next_media.file_path = await yt.download(
+                            next_media.id, video=next_media.video
                         )
-                        and await db.get_autoplay(
-                            chat_id
-                        )
-                    ):
-
-                        max_duration = min(
-                            int(
-                                current.duration_sec
-                                * 1.5
-                            ),
-                            900,
-                        )
-
-                        try:
-
-                            next_media = (
-                                await yt.get_related(
-                                    current.id,
-                                    video=current.video,
-                                    max_duration=max_duration,
-                                )
-                            )
-
-                        except Exception as e:
-
-                            logger.error(
-                                "Autoplay error: %s",
-                                e,
-                            )
-
-                            next_media = None
-
-                        if next_media:
-
-                            queue.add(
-                                chat_id,
-                                next_media,
-                            )
-
-                    # -------------------------------------
-                    # FAST PREFETCH
-                    # -------------------------------------
-
-                    if (
-                        next_media
-                        and not next_media.file_path
-                    ):
-
-                        try:
-
-                            next_media.file_path = (
-                                await yt.download(
-                                    next_media.id,
-                                    video=next_media.video,
-                                )
-                            )
-
-                        except Exception as e:
-
-                            logger.warning(
-                                "Next prefetch failed: %s",
-                                e,
-                            )
-
                     break
 
                 await asyncio.sleep(5)
-
         except asyncio.CancelledError:
             pass
-
         except Exception as e:
-
-            logger.error(
-                "Prepare-next error: %s",
-                e,
-            )
-
+            logger.error(f"Error in prefetch for {chat_id}: {e}")
         finally:
+            self.prefetch_tasks.pop(chat_id, None)
 
-            self.prefetch_tasks.pop(
-                chat_id,
-                None,
-            )
-
-    # =====================================================
-    # STOP
-    # =====================================================
-
-    async def stop(
-        self,
-        chat_id: int,
-    ):
-
-        task = self.prefetch_tasks.pop(
-            chat_id,
-            None,
-        )
-
-        if task:
-
+    async def stop(self, chat_id: int) -> None:
+        if task := self.prefetch_tasks.pop(chat_id, None):
             task.cancel()
 
-        client = await db.get_assistant(
-            chat_id
-        )
-
-        media = queue.get_current(
-            chat_id
-        )
-
-        if (
-            media
-            and media.message_id
-        ):
-
+        client = await db.get_assistant(chat_id)
+        media = queue.get_current(chat_id)
+        if media and media.message_id:
             try:
-
-                await app.delete_messages(
-                    chat_id,
-                    media.message_id,
-                )
-
+                await app.delete_messages(chat_id, media.message_id)
             except Exception:
                 pass
-
-        queue.clear(
-            chat_id
-        )
-
-        await db.remove_call(
-            chat_id
-        )
-
-        await db.set_loop(
-            chat_id,
-            0,
-        )
+        queue.clear(chat_id)
+        await db.remove_call(chat_id)
+        await db.set_loop(chat_id, 0)
 
         try:
-
-            await client.leave_call(
-                chat_id,
-                close=False,
-            )
-
+            await client.leave_call(chat_id, close=False)
         except Exception:
             pass
-
-    # =====================================================
-    # PLAY MEDIA
-    # =====================================================
 
     async def play_media(
         self,
@@ -345,217 +121,70 @@ class TgCall(PyTgCalls):
         message: Message,
         media: Media | Track,
         seek_time: int = 0,
-    ):
-
-        # Cancel old prefetch task
-        task = self.prefetch_tasks.pop(
-            chat_id,
-            None,
-        )
-
-        if task:
+    ) -> None:
+        if task := self.prefetch_tasks.pop(chat_id, None):
             task.cancel()
 
-        self.restarting[
-            chat_id
-        ] += 1
-
-        client = await db.get_assistant(
-            chat_id
-        )
-
-        _lang = await lang.get_lang(
-            chat_id
-        )
-
-        _thumb_mode = await db.get_thumb_mode(
-            chat_id
-        )
-
-        # =================================================
-        # THUMB
-        # =================================================
-
-        _thumb = None
-
-        if (
-            config.THUMB_GEN
-            and _thumb_mode
-        ):
-
-            try:
-
-                if isinstance(
-                    media,
-                    Track,
-                ):
-
-                    _thumb = await thumb.generate(
-                        media
-                    )
-
-                else:
-
-                    _thumb = config.DEFAULT_THUMB
-
-            except Exception:
-
-                _thumb = None
-
-        # =================================================
-        # SOURCE CHECK
-        # =================================================
-
-        source = media.file_path
-
-        if not source:
-
-            try:
-
-                source = await yt.download(
-                    media.id,
-                    video=media.video,
-                )
-
-                media.file_path = source
-
-            except Exception as e:
-
-                logger.error(
-                    "Download source error: %s",
-                    e,
-                )
-
-                source = None
-
-        if not source:
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_no_file"
-                    ].format(
-                        config.SUPPORT_CHAT
-                    )
-                )
-
-            except Exception:
-                pass
-
-            return await self.play_next(
-                chat_id
+        self.restarting[chat_id] += 1
+        if await db.get_call(chat_id):
+            await asyncio.sleep(0.5)
+        client = await db.get_assistant(chat_id)
+        _lang = await lang.get_lang(chat_id)
+        _thumb_mode = await db.get_thumb_mode(chat_id)
+        _thumb = (
+            (
+                await thumb.generate(media)
+                if isinstance(media, Track)
+                else config.DEFAULT_THUMB
             )
-
-        # =================================================
-        # FFMPEG
-        # =================================================
-
-        ffmpeg_parts = []
-
-        # -re is needed for real-time playback.
-        ffmpeg_parts.append(
-            "-re"
+            if config.THUMB_GEN and _thumb_mode
+            else None
         )
 
-        if seek_time > 1:
+        if not media.file_path:
+            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            return await self.play_next(chat_id)
 
-            ffmpeg_parts.extend(
-                [
-                    "-ss",
-                    str(seek_time),
-                ]
-            )
-
-        if not media.video:
-
-            ffmpeg_parts.append(
-                "-vn"
-            )
-
-        ffmpeg_params = " ".join(
-            ffmpeg_parts
-        )
-
-        # =================================================
-        # MEDIA STREAM
-        # =================================================
+        ffmpeg_params = (
+            "-re "
+            + (f"-ss {seek_time} " if seek_time > 1 else "")
+            + ("-vn" if not media.video else "")
+        ).strip()
 
         stream = types.MediaStream(
-            media_path=source,
-
-            audio_parameters=(
-                types.AudioQuality.HIGH
-            ),
-
-            video_parameters=(
-                types.VideoQuality.HD_720p
-            ),
-
-            audio_flags=(
-                types.MediaStream.Flags.REQUIRED
-            ),
-
+            media_path=media.file_path,
+            audio_parameters=types.AudioQuality.HIGH,
+            video_parameters=types.VideoQuality.HD_720p,
+            audio_flags=types.MediaStream.Flags.REQUIRED,
             video_flags=(
                 types.MediaStream.Flags.AUTO_DETECT
                 if media.video
                 else types.MediaStream.Flags.IGNORE
             ),
-
-            ffmpeg_parameters=(
-                ffmpeg_params
-                if ffmpeg_params
-                else None
-            ),
+            ffmpeg_parameters=ffmpeg_params or None,
         )
 
         try:
-
-            # =================================================
-            # PLAY IMMEDIATELY
-            # =================================================
-
-            await client.play(
-                chat_id,
-                stream,
-            )
-
-            # IMPORTANT:
-            # Removed old fixed 2-second sleep.
-            # We update state immediately.
+            if seek_time or await db.get_call(chat_id):
+                await client.play(chat_id, stream)
+            else:
+                await client.play(chat_id, stream)
 
             media.played_at = time.time()
-
             if seek_time:
-
                 media.time = seek_time
-
             else:
-
-                media.time = 0
-
-                await db.add_call(
-                    chat_id
-                )
-
-                text = _lang[
-                    "play_media"
-                ].format(
+                media.time = 1
+                await db.add_call(chat_id)
+                text = _lang["play_media"].format(
                     media.url,
                     media.title,
                     media.duration,
                     media.user,
                 )
-
-                keyboard = buttons.controls(
-                    chat_id,
-                    lang=_lang,
-                )
-
+                keyboard = buttons.controls(chat_id, lang=_lang)
                 try:
-
                     if _thumb:
-
                         await message.edit_media(
                             media=InputMediaPhoto(
                                 media=_thumb,
@@ -563,811 +192,244 @@ class TgCall(PyTgCalls):
                             ),
                             reply_markup=keyboard,
                         )
-
                     else:
-
-                        await message.edit_text(
-                            text,
-                            reply_markup=keyboard,
-                        )
-
+                        await message.edit_text(text, reply_markup=keyboard)
                 except Exception:
-
                     try:
-
                         await message.delete()
-
                     except Exception:
                         pass
-
-                    try:
-
-                        if _thumb:
-
-                            sent = await app.send_photo(
-                                chat_id=chat_id,
-                                photo=_thumb,
-                                caption=text,
-                                reply_markup=keyboard,
-                            )
-
-                        else:
-
-                            sent = await app.send_message(
-                                chat_id=chat_id,
-                                text=text,
-                                reply_markup=keyboard,
-                            )
-
-                        media.message_id = sent.id
-
-                    except Exception as e:
-
-                        logger.warning(
-                            "Now-playing message error: %s",
-                            e,
+                    if _thumb:
+                        sent = await app.send_photo(
+                            chat_id=chat_id,
+                            photo=_thumb,
+                            caption=text,
+                            reply_markup=keyboard,
                         )
+                    else:
+                        sent = await app.send_message(
+                            chat_id=chat_id,
+                            text=text,
+                            reply_markup=keyboard,
+                        )
+                    media.message_id = sent.id
 
-            # =================================================
-            # BACKGROUND NEXT-PREFETCH
-            # =================================================
-
-            self.prefetch_tasks[
-                chat_id
-            ] = asyncio.create_task(
-                self._prepare_next(
-                    chat_id
-                )
+            self.prefetch_tasks[chat_id] = asyncio.create_task(
+                self._prepare_next(chat_id)
             )
-
         except FileNotFoundError:
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_no_file"
-                    ].format(
-                        config.SUPPORT_CHAT
-                    )
-                )
-
-            except Exception:
-                pass
-
-            await self.play_next(
-                chat_id
-            )
-
+            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            await self.play_next(chat_id)
         except exceptions.NoActiveGroupCall:
-
-            await self.stop(
-                chat_id
-            )
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_no_call"
-                    ]
-                )
-
-            except Exception:
-                pass
-
+            await self.stop(chat_id)
+            await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_no_audio"
-                    ]
-                )
-
-            except Exception:
-                pass
-
-            await self.play_next(
-                chat_id
-            )
-
-        except (
-            asyncio.TimeoutError,
-            TimeoutError,
-        ):
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_tg_server"
-                    ]
-                )
-
-            except Exception:
-                pass
-
-            await self.play_next(
-                chat_id
-            )
-
-        except (
-            ConnectionError,
-            ConnectionNotFound,
-            TelegramServerError,
-        ):
-
-            await self.stop(
-                chat_id
-            )
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_tg_server"
-                    ]
-                )
-
-            except Exception:
-                pass
-
+            await message.edit_text(_lang["error_no_audio"])
+            await self.play_next(chat_id)
+        except (asyncio.TimeoutError, TimeoutError):
+            await message.edit_text(_lang["error_tg_server"])
+            await self.play_next(chat_id)
+        except (ConnectionError, ConnectionNotFound, TelegramServerError):
+            await self.stop(chat_id)
+            await message.edit_text(_lang["error_tg_server"])
         except RTMPStreamingUnsupported:
-
-            await self.stop(
-                chat_id
-            )
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_rtmp"
-                    ]
-                )
-
-            except Exception:
-                pass
-
-        except Exception as e:
-
-            logger.exception(
-                "play_media failed for %s: %s",
-                chat_id,
-                e,
-            )
-
-            try:
-
-                await message.edit_text(
-                    _lang[
-                        "error_tg_server"
-                    ]
-                )
-
-            except Exception:
-                pass
-
-            await self.play_next(
-                chat_id
-            )
-
+            await self.stop(chat_id)
+            await message.edit_text(_lang["error_rtmp"])
         finally:
+            await asyncio.sleep(5)
+            self.restarting[chat_id] -= 1
 
-            self.restarting[
-                chat_id
-            ] -= 1
-
-            if (
-                self.restarting[
-                    chat_id
-                ] <= 0
-            ):
-
-                self.restarting.pop(
-                    chat_id,
-                    None,
-                )
-
-    # =====================================================
-    # REPLAY
-    # =====================================================
-
-    async def replay(
-        self,
-        chat_id: int,
-    ):
-
-        if not await db.get_call(
-            chat_id
-        ):
+    async def replay(self, chat_id: int) -> None:
+        if not await db.get_call(chat_id):
             return
 
-        media = queue.get_current(
-            chat_id
-        )
-
-        if (
-            media
-            and media.message_id
-        ):
-
+        media = queue.get_current(chat_id)
+        if media and media.message_id:
             try:
-
-                await app.delete_messages(
-                    chat_id,
-                    media.message_id,
-                )
-
+                await app.delete_messages(chat_id, media.message_id)
             except Exception:
                 pass
-
-        _lang = await lang.get_lang(
-            chat_id
-        )
-
-        msg = await app.send_message(
-            chat_id=chat_id,
-            text=_lang[
-                "play_again"
-            ],
-        )
-
+        _lang = await lang.get_lang(chat_id)
+        msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
         media.message_id = msg.id
+        await self.play_media(chat_id, msg, media)
 
-        await self.play_media(
-            chat_id,
-            msg,
-            media,
-        )
+    async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
+        if loop := await db.get_loop(chat_id):
+            await db.set_loop(chat_id, loop - 1)
+            return await self.replay(chat_id)
 
-    # =====================================================
-    # PLAY NEXT
-    # =====================================================
-
-    async def play_next(
-        self,
-        chat_id: int,
-        skip_user: str | None = None,
-    ):
-
-        # =================================================
-        # LOOP
-        # =================================================
-
-        loop = await db.get_loop(
-            chat_id
-        )
-
-        if loop:
-
-            await db.set_loop(
-                chat_id,
-                loop - 1,
-            )
-
-            return await self.replay(
-                chat_id
-            )
-
-        _lang = await lang.get_lang(
-            chat_id
-        )
-
-        current = queue.get_current(
-            chat_id
-        )
-
-        # =================================================
-        # DELETE OLD MESSAGE
-        # =================================================
-
-        if (
-            current
-            and current.message_id
-        ):
-
+        _lang = await lang.get_lang(chat_id)
+        current = queue.get_current(chat_id)
+        if current and current.message_id:
             try:
-
-                await app.delete_messages(
-                    chat_id,
-                    current.message_id,
-                )
-
+                await app.delete_messages(chat_id, current.message_id)
             except Exception:
                 pass
 
-        # =================================================
-        # GET NEXT
-        # =================================================
-
-        media = queue.get_next(
-            chat_id
-        )
-
-        # =================================================
-        # QUEUE EMPTY
-        # =================================================
-
+        media = queue.get_next(chat_id)
         if not media:
-
-            if (
-                await db.get_autoplay(
-                    chat_id
-                )
-                and current
-                and isinstance(
-                    current,
-                    Track,
-                )
-            ):
-
-                # -----------------------------------------
-                # AUTOPLAY MESSAGE
-                # -----------------------------------------
-
-                if skip_user:
-
-                    msg = await app.send_message(
-                        chat_id,
-                        _lang[
-                            "autoplay_skip"
-                        ].format(
-                            skip_user
-                        ),
-                    )
-
-                else:
-
-                    msg = await app.send_message(
-                        chat_id,
-                        _lang[
-                            "autoplay_next"
-                        ],
-                    )
-
-                # -----------------------------------------
-                # GET RELATED
-                # -----------------------------------------
-
-                max_duration = min(
-                    int(
-                        current.duration_sec
-                        * 1.5
-                    ),
-                    900,
-                )
-
-                try:
-
-                    media = await yt.get_related(
-                        current.id,
-                        video=current.video,
-                        max_duration=max_duration,
-                    )
-
-                except Exception as e:
-
-                    logger.error(
-                        "Autoplay fetch error: %s",
-                        e,
-                    )
-
-                    media = None
-
-                # -----------------------------------------
-                # ADD QUEUE
-                # -----------------------------------------
-
-                if media:
-
-                    queue.add(
-                        chat_id,
-                        media,
-                    )
-
-                    # get the actual queue object
-                    media = queue.get_current(
-                        chat_id
-                    )
-
-                # -----------------------------------------
-                # FAILED
-                # -----------------------------------------
-
-                if not media:
-
-                    await self.stop(
-                        chat_id
-                    )
-
-                    try:
-
-                        return await msg.edit_text(
-                            _lang[
-                                "queue_finished"
-                            ]
+            if await db.get_autoplay(chat_id):
+                if current and isinstance(current, Track):
+                    msg = None
+                    if skip_user:
+                        msg = await app.send_message(
+                            chat_id, _lang["autoplay_skip"].format(skip_user)
                         )
+                    else:
+                        msg = await app.send_message(chat_id, _lang["autoplay_next"])
 
-                    except Exception:
-
-                        return
-
-                # -----------------------------------------
-                # FAST SOURCE
-                # -----------------------------------------
-
-                if not media.file_path:
-
-                    media.file_path = (
-                        await yt.download(
-                            media.id,
-                            video=media.video,
+                    # Set max duration for autoplay tracks based on current song
+                    # but capped at 15 minutes to avoid extremely long tracks
+                    # Use existing next item if it was pre-fetched
+                    media = queue.get_current(chat_id)
+                    if not media:
+                        max_duration = min(int(current.duration_sec * 1.5), 900)
+                        media = await yt.get_related(
+                            current.id, video=current.video, max_duration=max_duration
                         )
-                    )
+                        if media:
+                            queue.add(chat_id, media)
 
-                if not media.file_path:
+                    if media:
+                        # Re-fetch from queue in case it was just added to ensure
+                        # we have the object that might have file_path set by prefetcher
+                        media = queue.get_current(chat_id)
 
-                    try:
-
-                        return await msg.edit_text(
-                            _lang[
-                                "error_no_file"
-                            ].format(
-                                config.SUPPORT_CHAT
+                        if not media.file_path:
+                            media.file_path = await yt.download(
+                                media.id, video=media.video
                             )
-                        )
+                            if not media.file_path:
+                                await self.stop(chat_id)
+                                try:
+                                    return await msg.edit_text(
+                                        _lang["error_no_file"].format(
+                                            config.SUPPORT_CHAT
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+                                return
 
-                    except Exception:
+                        media.message_id = msg.id
+                        return await self.play_media(chat_id, msg, media)
+                    else:
+                        await self.stop(chat_id)
+                        if msg:
+                            return await msg.edit_text(_lang["queue_finished"])
+                        return await app.send_message(chat_id, _lang["queue_finished"])
+                else:
+                    await self.stop(chat_id)
+                    return await app.send_message(chat_id, _lang["queue_finished"])
+            else:
+                await self.stop(chat_id)
+                if skip_user:
+                    await app.send_message(
+                        chat_id, _lang["play_skipped"].format(skip_user)
+                    )
+                return await app.send_message(chat_id, _lang["queue_finished"])
 
-                        return
-
-                media.message_id = msg.id
-
-                return await self.play_media(
-                    chat_id,
-                    msg,
-                    media,
-                )
-
-            # =================================================
-            # NO AUTOPLAY
-            # =================================================
-
-            await self.stop(
-                chat_id
-            )
-
-            if skip_user:
-
-                await app.send_message(
-                    chat_id,
-                    _lang[
-                        "play_skipped"
-                    ].format(
-                        skip_user
-                    ),
-                )
-
-            return await app.send_message(
-                chat_id,
-                _lang[
-                    "queue_finished"
-                ],
-            )
-
-        # =================================================
-        # NORMAL NEXT TRACK
-        # =================================================
+        # If we reached here, media was already retrieved by queue.get_next above
 
         msg = None
-
         if media.message_id:
-
             try:
-
-                msg = await app.get_messages(
-                    chat_id,
-                    media.message_id,
-                )
-
+                msg = await app.get_messages(chat_id, media.message_id)
+                if not msg or not msg.id or msg.empty:
+                    msg = None
+                else:
+                    try:
+                        text = (
+                            _lang["play_skipped"].format(skip_user)
+                            + "\n\n"
+                            + _lang["play_next"]
+                            if skip_user
+                            else _lang["play_next"]
+                        )
+                        await msg.edit_text(text)
+                    except Exception:
+                        pass
             except Exception:
-
                 msg = None
 
-        # =================================================
-        # MESSAGE
-        # =================================================
-
-        text = (
-            (
-                _lang[
-                    "play_skipped"
-                ].format(
-                    skip_user
-                )
-                + "\n\n"
-                + _lang[
-                    "play_next"
-                ]
+        if not msg:
+            text = (
+                _lang["play_skipped"].format(skip_user) + "\n\n" + _lang["play_next"]
+                if skip_user
+                else _lang["play_next"]
             )
-            if skip_user
-            else _lang[
-                "play_next"
-            ]
-        )
-
-        if msg:
-
-            try:
-
-                await msg.edit_text(
-                    text
-                )
-
-            except Exception:
-                pass
-
-        else:
-
-            msg = await app.send_message(
-                chat_id=chat_id,
-                text=text,
-            )
-
-        # =================================================
-        # SOURCE
-        # =================================================
+            msg = await app.send_message(chat_id=chat_id, text=text)
 
         if not media.file_path:
-
-            try:
-
-                media.file_path = (
-                    await yt.download(
-                        media.id,
-                        video=media.video,
-                    )
-                )
-
-            except Exception as e:
-
-                logger.error(
-                    "Next download failed: %s",
-                    e,
-                )
-
-                media.file_path = None
-
-        # =================================================
-        # FAILED
-        # =================================================
-
-        if not media.file_path:
-
-            try:
-
-                await msg.edit_text(
-                    _lang[
-                        "error_no_file"
-                    ].format(
-                        config.SUPPORT_CHAT
-                    )
-                )
-
-            except Exception:
-                pass
-
-            return await self.play_next(
-                chat_id
-            )
+            media.file_path = await yt.download(media.id, video=media.video)
+            if not media.file_path:
+                if msg:
+                    try:
+                        await msg.edit_text(
+                            _lang["error_no_file"].format(config.SUPPORT_CHAT)
+                        )
+                    except Exception:
+                        pass
+                return await self.play_next(chat_id)
 
         media.message_id = msg.id
-
-        return await self.play_media(
-            chat_id,
-            msg,
-            media,
-        )
-
-    # =====================================================
-    # PING
-    # =====================================================
+        await self.play_media(chat_id, msg, media)
 
     async def ping(self) -> float:
+        pings = [client.ping for client in self.clients]
+        return round(sum(pings) / len(pings), 2)
 
-        if not self.clients:
-            return 0.0
-
-        pings = [
-            client.ping
-            for client in self.clients
-        ]
-
-        return round(
-            sum(pings)
-            / len(pings),
-            2,
-        )
-
-    # =====================================================
-    # DELETE MESSAGE
-    # =====================================================
-
-    async def _delete_msg(
-        self,
-        message: Message,
-        delay: int = 2,
-    ):
-
-        await asyncio.sleep(
-            delay
-        )
-
+    async def _delete_msg(self, message: Message, delay: int = 2):
+        await asyncio.sleep(delay)
         try:
-
             await message.delete()
-
         except Exception:
             pass
 
-    # =====================================================
-    # DECORATORS
-    # =====================================================
-
-    async def decorators(
-        self,
-        client: PyTgCalls,
-    ):
-
+    async def decorators(self, client: PyTgCalls) -> None:
         @client.on_update()
-        async def update_handler(
-            _,
-            update: types.Update,
-        ):
-
-            # =============================================
-            # VC PARTICIPANT
-            # =============================================
-
-            if isinstance(
-                update,
-                types.UpdatedGroupCallParticipant,
-            ):
-
-                if not await db.get_vclogger(
-                    update.chat_id
-                ):
+        async def update_handler(_, update: types.Update) -> None:
+            if isinstance(update, types.UpdatedGroupCallParticipant):
+                if not await db.get_vclogger(update.chat_id):
                     return
-
                 try:
-
-                    user = await app.get_users(
-                        update.participant.user_id
-                    )
-
+                    user = await app.get_users(update.participant.user_id)
                 except Exception:
-
                     return
 
-                _lang = await lang.get_lang(
-                    update.chat_id
-                )
-
-                if (
-                    update.action
-                    == types.UpdatedGroupCallParticipant.Action.JOINED
-                ):
-
-                    text = _lang[
-                        "vclog_joined"
-                    ].format(
-                        user.mention,
-                        user.id,
-                    )
-
-                elif (
-                    update.action
-                    == types.UpdatedGroupCallParticipant.Action.LEFT
-                ):
-
-                    text = _lang[
-                        "vclog_left"
-                    ].format(
-                        user.mention,
-                        user.id,
-                    )
-
+                _lang = await lang.get_lang(update.chat_id)
+                if update.action == types.GroupCallParticipant.Action.JOINED:
+                    text = _lang["vclog_joined"].format(user.mention, user.id)
+                elif update.action == types.GroupCallParticipant.Action.LEFT:
+                    text = _lang["vclog_left"].format(user.mention, user.id)
                 else:
-
                     return
 
                 try:
-
-                    sent = await app.send_message(
-                        update.chat_id,
-                        text,
-                    )
-
-                    asyncio.create_task(
-                        self._delete_msg(
-                            sent
-                        )
-                    )
-
+                    sent = await app.send_message(update.chat_id, text)
+                    asyncio.create_task(self._delete_msg(sent))
                 except Exception:
                     pass
 
-            # =============================================
-            # STREAM ENDED
-            # =============================================
-
-            elif isinstance(
-                update,
-                types.StreamEnded,
-            ):
-
-                if (
-                    update.stream_type
-                    == types.StreamEnded.Type.AUDIO
-                ):
-
-                    if self.restarting.get(
-                        update.chat_id
-                    ):
-
+            elif isinstance(update, types.StreamEnded):
+                if update.stream_type == types.StreamEnded.Type.AUDIO:
+                    if self.restarting.get(update.chat_id):
                         return
-
-                    await self.play_next(
-                        update.chat_id
-                    )
-
-            # =============================================
-            # CHAT UPDATE
-            # =============================================
-
-            elif isinstance(
-                update,
-                types.ChatUpdate,
-            ):
-
+                    await self.play_next(update.chat_id)
+            elif isinstance(update, types.ChatUpdate):
                 if update.status in [
                     types.ChatUpdate.Status.KICKED,
                     types.ChatUpdate.Status.LEFT_GROUP,
                     types.ChatUpdate.Status.CLOSED_VOICE_CHAT,
                 ]:
+                    await self.stop(update.chat_id)
 
-                    await self.stop(
-                        update.chat_id
-                    )
-
-    # =====================================================
-    # BOOT
-    # =====================================================
-
-    async def boot(self):
-
+    async def boot(self) -> None:
         PyTgCallsSession.notice_displayed = True
-
         for ub in userbot.clients:
-
-            client = PyTgCalls(
-                ub,
-                cache_duration=100,
-            )
-
+            client = PyTgCalls(ub, cache_duration=100)
             await client.start()
-
-            self.clients.append(
-                client
-            )
-
-            await self.decorators(
-                client
-            )
-
-        logger.info(
-            "PyTgCalls client(s) started."
-                    )
+            self.clients.append(client)
+            await self.decorators(client)
+        logger.info("PyTgCalls client(s) started.")
